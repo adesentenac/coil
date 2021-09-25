@@ -21,6 +21,7 @@ import androidx.compose.ui.geometry.isSpecified
 import androidx.compose.ui.geometry.isUnspecified
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -62,6 +63,7 @@ import kotlin.math.roundToInt
  * @param onExecute Called immediately before the [ImagePainter] launches an image request.
  *  Return 'true' to proceed with the request. Return 'false' to skip executing the request.
  * @param builder An optional lambda to configure the request.
+ * @param filterQuality The [FilterQuality] to use when drawing a bitmap.
  */
 @Composable
 inline fun rememberImagePainter(
@@ -69,12 +71,13 @@ inline fun rememberImagePainter(
     imageLoader: ImageLoader,
     onExecute: ExecuteCallback = ExecuteCallback.Lazy,
     builder: ImageRequest.Builder.() -> Unit = {},
+    filterQuality: FilterQuality = FilterQuality.Low,
 ): ImagePainter {
     val request = ImageRequest.Builder(LocalContext.current)
         .apply(builder)
         .data(data)
         .build()
-    return rememberImagePainter(request, imageLoader, onExecute)
+    return rememberImagePainter(request, imageLoader, onExecute, filterQuality)
 }
 
 /**
@@ -84,23 +87,25 @@ inline fun rememberImagePainter(
  * @param imageLoader The [ImageLoader] that will be used to execute [request].
  * @param onExecute Called immediately before the [ImagePainter] launches an image request.
  *  Return 'true' to proceed with the request. Return 'false' to skip executing the request.
+ * @param filterQuality The [FilterQuality] to use when drawing a bitmap.
  */
 @Composable
 fun rememberImagePainter(
     request: ImageRequest,
     imageLoader: ImageLoader,
     onExecute: ExecuteCallback = ExecuteCallback.Lazy,
+    filterQuality: FilterQuality = FilterQuality.Low,
 ): ImagePainter {
     requireSupportedData(request.data)
     require(request.target == null) { "request.target must be null." }
 
     val scope = rememberCoroutineScope { Dispatchers.Main.immediate }
-    val imagePainter = remember(scope) { ImagePainter(scope, request, imageLoader) }
+    val imagePainter = remember(scope) { ImagePainter(scope, request, imageLoader, filterQuality) }
     imagePainter.request = request
     imagePainter.imageLoader = imageLoader
     imagePainter.onExecute = onExecute
     imagePainter.isPreview = LocalInspectionMode.current
-    updatePainter(imagePainter, request, imageLoader)
+    updatePainter(imagePainter, request, imageLoader, filterQuality)
     return imagePainter
 }
 
@@ -112,7 +117,8 @@ fun rememberImagePainter(
 class ImagePainter internal constructor(
     private val parentScope: CoroutineScope,
     request: ImageRequest,
-    imageLoader: ImageLoader
+    imageLoader: ImageLoader,
+    private val filterQuality: FilterQuality
 ) : Painter(), RememberObserver {
 
     private var rememberScope: CoroutineScope? = null
@@ -187,7 +193,7 @@ class ImagePainter internal constructor(
                     requestJob = launch {
                         state = imageLoader
                             .execute(updateRequest(current.request, current.size))
-                            .toState()
+                            .toState(filterQuality)
                     }
                 }
             }
@@ -208,7 +214,7 @@ class ImagePainter internal constructor(
         return request.newBuilder()
             .target(
                 onStart = { placeholder ->
-                    state = State.Loading(painter = placeholder?.toPainter())
+                    state = State.Loading(painter = placeholder?.toPainter(filterQuality))
                 }
             )
             .apply {
@@ -327,12 +333,13 @@ class ImagePainter internal constructor(
 private fun updatePainter(
     imagePainter: ImagePainter,
     request: ImageRequest,
-    imageLoader: ImageLoader
+    imageLoader: ImageLoader,
+    filterQuality: FilterQuality
 ) {
     // If we're in inspection mode (preview) and we have a placeholder, just draw
     // that without executing an image request.
     if (imagePainter.isPreview) {
-        imagePainter.painter = request.placeholder?.toPainter()
+        imagePainter.painter = request.placeholder?.toPainter(filterQuality)
         return
     }
 
@@ -383,21 +390,21 @@ private fun unsupportedData(name: String): Nothing {
     )
 }
 
-private fun ImageResult.toState() = when (this) {
+private fun ImageResult.toState(filterQuality: FilterQuality) = when (this) {
     is SuccessResult -> State.Success(
-        painter = drawable.toPainter(),
+        painter = drawable.toPainter(filterQuality),
         result = this
     )
     is ErrorResult -> State.Error(
-        painter = drawable?.toPainter(),
+        painter = drawable?.toPainter(filterQuality),
         result = this
     )
 }
 
 /** Convert this [Drawable] into a [Painter] using Compose primitives if possible. */
-private fun Drawable.toPainter(): Painter {
+private fun Drawable.toPainter(filterQuality: FilterQuality): Painter {
     return when (this) {
-        is BitmapDrawable -> BitmapPainter(bitmap.asImageBitmap())
+        is BitmapDrawable -> BitmapPainter(bitmap.asImageBitmap(), filterQuality = filterQuality)
         is ColorDrawable -> ColorPainter(Color(color))
         else -> DrawablePainter(mutate())
     }
